@@ -319,8 +319,8 @@ parse_qs(<<>>) ->
 parse_qs(Qs) ->
 	Tokens = binary:split(Qs, <<"&">>, [global, trim]),
 	[case binary:split(Token, <<"=">>) of
-		[Token] -> {quoted:from_url(Token), true};
-		[Name, Value] -> {quoted:from_url(Name), quoted:from_url(Value)}
+		[Token] -> {quoted_log:from_url(Token), true};
+		[Name, Value] -> {quoted_log:from_url(Name), quoted_log:from_url(Value)}
 	end || Token <- Tokens].
 
 -spec response_head(http_status(), http_headers(), http_headers()) -> iolist().

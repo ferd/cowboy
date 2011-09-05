@@ -60,7 +60,7 @@ do_split_path(RawPath, Separator) ->
 		[<<>>|Path] -> Path;
 		Path -> Path
 	end,
-	[quoted:from_url(Token) || Token <- EncodedPath].
+	[quoted_log:from_url(Token) || Token <- EncodedPath].
 
 %% @doc Match hostname tokens and path tokens against dispatch rules.
 %%
