@@ -47,7 +47,8 @@
 	max_empty_lines :: integer(),
 	timeout :: timeout(),
 	connection = keepalive :: keepalive | close,
-	buffer = <<>> :: binary()
+	buffer = <<>> :: binary(),
+	keep_alive_counter = 1 :: integer()
 }).
 
 %% API.
@@ -240,13 +241,14 @@ handler_terminate(HandlerState, Req, #state{handler={Handler, Opts}}) ->
 	end.
 
 -spec next_request(any(), #http_req{}, #state{}) -> ok.
-next_request(HandlerState, Req=#http_req{buffer=Buffer}, State) ->
+next_request(HandlerState, Req=#http_req{buffer=Buffer}, State=#state{keep_alive_counter=KeepAliveCount}) ->
 	HandlerRes = handler_terminate(HandlerState, Req, State),
 	BodyRes = ensure_body_processed(Req),
 	RespRes = ensure_response(Req, State),
-	case {HandlerRes, BodyRes, RespRes, State#state.connection} of
-		{ok, ok, ok, keepalive} ->
-			?MODULE:parse_request(State#state{buffer=Buffer});
+	KeepAlive = KeepAliveCount =< 500,
+	case {HandlerRes, BodyRes, RespRes, State#state.connection, KeepAlive} of
+		{ok, ok, ok, keepalive, true} ->
+			?MODULE:parse_request(State#state{buffer=Buffer, keep_alive_counter=KeepAliveCount+1});
 		_Closed ->
 			terminate(State)
 	end.
