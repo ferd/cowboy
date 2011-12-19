@@ -3,6 +3,9 @@ Cowboy
 
 Cowboy is a small, fast and modular HTTP server written in Erlang.
 
+Cowboy is also a socket acceptor pool, able to accept connections
+for any kind of TCP protocol.
+
 Goals
 -----
 
@@ -104,6 +107,14 @@ handle(Req, State) ->
 terminate(Req, State) ->
     ok.
 ```
+**Note**: versions prior to `0.4.0` used the
+[quoted](https://github.com/klaar/quoted.erl) library instead of the built in
+`cowboy_http:urldecode/2` function. If you want to retain this you must add it
+as a dependency to your application and add the following cowboy_http_protocol
+option:
+
+    {urldecode, {fun quoted:from_url/2, quoted:make([])}}
+
 
 Continue reading to learn how to dispatch rules and handle requests.
 
@@ -130,7 +141,7 @@ multiple trailing segments of the request path using the atom `'...'` (the atom
 ellipsis) respectively as the first host token or the last path token. For
 example, host rule `['...', <<"dev-extend">>, <<"eu">>]` can match both
 "cowboy.bugs.dev-extend.eu" and "dev-extend.eu" and path rule
-`[<<"projects">>, '...']` can math both "/projects" and
+`[<<"projects">>, '...']` can match both "/projects" and
 "/projects/cowboy/issues/42". The host leading segments and the path trailing
 segments can later be retrieved through `cowboy_http_req:host_info/1` and
 `cowboy_http_req:path_info/1`.
@@ -233,9 +244,10 @@ is the pid to the listener's gen_server, managing the connections. Socket is of
 course the client socket; Transport is the module name of the chosen transport
 handler and Opts is protocol options defined when starting the listener.
 
-After initializing your protocol, it is recommended to wait to receive a message
-containing the atom 'shoot', as it will ensure Cowboy has been able to fully
-initialize the socket. Anything you do past this point is up to you!
+After initializing your protocol, it is recommended to call the
+function cowboy:accept_ack/1 with the ListenerPid as argument,
+as it will ensure Cowboy has been able to fully initialize the socket.
+Anything you do past this point is up to you!
 
 If you need to change some socket options, like enabling raw mode for example,
 you can call the <em>Transport:setopts/2</em> function. It is the protocol's

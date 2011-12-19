@@ -15,7 +15,7 @@
 %% @doc Cowboy API to start and stop listeners.
 -module(cowboy).
 
--export([start_listener/6, stop_listener/1]).
+-export([start_listener/6, stop_listener/1, child_spec/6, accept_ack/1]).
 
 %% @doc Start a listener for the given transport and protocol.
 %%
@@ -46,11 +46,8 @@
 start_listener(Ref, NbAcceptors, Transport, TransOpts, Protocol, ProtoOpts)
 		when is_integer(NbAcceptors) andalso is_atom(Transport)
 		andalso is_atom(Protocol) ->
-	supervisor:start_child(cowboy_sup,
-		{{cowboy_listener_sup, Ref}, {cowboy_listener_sup, start_link, [
-			NbAcceptors, Transport, TransOpts, Protocol, ProtoOpts
-		]},
-		permanent, 5000, supervisor, [cowboy_listener_sup]}).
+	supervisor:start_child(cowboy_sup, child_spec(Ref, NbAcceptors,
+		Transport, TransOpts, Protocol, ProtoOpts)).
 
 %% @doc Stop a listener identified by <em>Ref</em>.
 %% @todo Currently request processes aren't terminated with the listener.
@@ -62,3 +59,27 @@ stop_listener(Ref) ->
 		{error, Reason} ->
 			{error, Reason}
 	end.
+
+%% @doc Return a child spec suitable for embedding.
+%%
+%% When you want to embed cowboy in another application, you can use this
+%% function to create a <em>ChildSpec</em> suitable for use in a supervisor.
+%% The parameters are the same as in <em>start_listener/6</em> but rather
+%% than hooking the listener to the cowboy internal supervisor, it just returns
+%% the spec.
+-spec child_spec(any(), non_neg_integer(), module(), any(), module(), any())
+	-> supervisor:child_spec().
+child_spec(Ref, NbAcceptors, Transport, TransOpts, Protocol, ProtoOpts)
+		when is_integer(NbAcceptors) andalso is_atom(Transport)
+		andalso is_atom(Protocol) ->
+	{{cowboy_listener_sup, Ref}, {cowboy_listener_sup, start_link, [
+		NbAcceptors, Transport, TransOpts, Protocol, ProtoOpts
+	]}, permanent, 5000, supervisor, [cowboy_listener_sup]}.
+
+%% @doc Acknowledge the accepted connection.
+%%
+%% Effectively used to make sure the socket control has been given to
+%% the protocol process before starting to use it.
+-spec accept_ack(pid()) -> ok.
+accept_ack(ListenerPid) ->
+	receive {shoot, ListenerPid} -> ok end.

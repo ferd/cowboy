@@ -1,6 +1,6 @@
 %% Feel free to use, reuse and abuse the code in this file.
 
--module(websocket_handler).
+-module(websocket_handler_init_shutdown).
 -behaviour(cowboy_http_handler).
 -behaviour(cowboy_http_websocket_handler).
 -export([init/3, handle/2, terminate/2]).
@@ -17,20 +17,14 @@ terminate(_Req, _State) ->
 	exit(badarg).
 
 websocket_init(_TransportName, Req, _Opts) ->
-	erlang:start_timer(1000, self(), <<"websocket_init">>),
-	Req2 = cowboy_http_req:compact(Req),
-	{ok, Req2, undefined}.
+	{ok, Req2} = cowboy_http_req:reply(403, Req),
+	{shutdown, Req2}.
 
-websocket_handle({text, Data}, Req, State) ->
-	{reply, {text, Data}, Req, State};
-websocket_handle(_Frame, Req, State) ->
-	{ok, Req, State}.
+websocket_handle(_Frame, _Req, _State) ->
+	exit(badarg).
 
-websocket_info({timeout, _Ref, Msg}, Req, State) ->
-	erlang:start_timer(1000, self(), <<"websocket_handle">>),
-	{reply, {text, Msg}, Req, State};
-websocket_info(_Info, Req, State) ->
-	{ok, Req, State}.
+websocket_info(_Info, _Req, _State) ->
+	exit(badarg).
 
 websocket_terminate(_Reason, _Req, _State) ->
-	ok.
+	exit(badarg).

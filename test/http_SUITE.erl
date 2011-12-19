@@ -19,19 +19,29 @@
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1,
 	init_per_group/2, end_per_group/2]). %% ct.
 -export([chunked_response/1, headers_dupe/1, headers_huge/1,
-	nc_rand/1, pipeline/1, raw/1, ws0/1, ws8/1]). %% http.
+	keepalive_nl/1, nc_rand/1, nc_zero/1, pipeline/1, raw/1,
+	ws0/1, ws8/1, ws8_single_bytes/1, ws8_init_shutdown/1,
+	ws13/1, ws_timeout_hibernate/1, set_resp_header/1,
+	set_resp_overwrite/1, set_resp_body/1, response_as_req/1]). %% http.
 -export([http_200/1, http_404/1]). %% http and https.
+-export([http_10_hostless/1]). %% misc.
+-export([rest_simple/1, rest_keepalive/1]). %% rest.
 
 %% ct.
 
 all() ->
-	[{group, http}, {group, https}].
+	[{group, http}, {group, https}, {group, misc}, {group, rest}].
 
 groups() ->
 	BaseTests = [http_200, http_404],
 	[{http, [], [chunked_response, headers_dupe, headers_huge,
-		nc_rand, pipeline, raw, ws0, ws8] ++ BaseTests},
-	{https, [], BaseTests}].
+		keepalive_nl, nc_rand, nc_zero, pipeline, raw,
+		ws0, ws8, ws8_single_bytes, ws8_init_shutdown, ws13,
+		ws_timeout_hibernate, set_resp_header, set_resp_overwrite,
+		set_resp_body, response_as_req] ++ BaseTests},
+	{https, [], BaseTests},
+	{misc, [], [http_10_hostless]},
+	{rest, [], [rest_simple, rest_keepalive]}].
 
 init_per_suite(Config) ->
 	application:start(inets),
@@ -62,16 +72,32 @@ init_per_group(https, Config) ->
 			{keyfile, DataDir ++ "key.pem"}, {password, "cowboy"}],
 		cowboy_http_protocol, [{dispatch, init_https_dispatch()}]
 	),
-	[{scheme, "https"}, {port, Port}|Config].
+	[{scheme, "https"}, {port, Port}|Config];
+init_per_group(misc, Config) ->
+	Port = 33082,
+	cowboy:start_listener(misc, 100,
+		cowboy_tcp_transport, [{port, Port}],
+		cowboy_http_protocol, [{dispatch, [{'_', [
+			{[], http_handler, []}
+	]}]}]),
+	[{port, Port}|Config];
+init_per_group(rest, Config) ->
+	Port = 33083,
+	cowboy:start_listener(reset, 100,
+		cowboy_tcp_transport, [{port, Port}],
+		cowboy_http_protocol, [{dispatch, [{'_', [
+			{[<<"simple">>], rest_simple_resource, []}
+	]}]}]),
+	[{port, Port}|Config].
 
-end_per_group(http, _Config) ->
-	cowboy:stop_listener(http),
-	ok;
 end_per_group(https, _Config) ->
 	cowboy:stop_listener(https),
 	application:stop(ssl),
 	application:stop(public_key),
 	application:stop(crypto),
+	ok;
+end_per_group(Listener, _Config) ->
+	cowboy:stop_listener(Listener),
 	ok.
 
 %% Dispatch configuration.
@@ -81,8 +107,18 @@ init_http_dispatch() ->
 		{[<<"localhost">>], [
 			{[<<"chunked_response">>], chunked_handler, []},
 			{[<<"websocket">>], websocket_handler, []},
+			{[<<"ws_timeout_hibernate">>], ws_timeout_hibernate_handler, []},
+			{[<<"ws_init_shutdown">>], websocket_handler_init_shutdown, []},
+			{[<<"init_shutdown">>], http_handler_init_shutdown, []},
+			{[<<"long_polling">>], http_handler_long_polling, []},
 			{[<<"headers">>, <<"dupe">>], http_handler,
 				[{headers, [{<<"Connection">>, <<"close">>}]}]},
+			{[<<"set_resp">>, <<"header">>], http_handler_set_resp,
+				[{headers, [{<<"Vary">>, <<"Accept">>}]}]},
+			{[<<"set_resp">>, <<"overwrite">>], http_handler_set_resp,
+				[{headers, [{<<"Server">>, <<"DesireDrive/1.0">>}]}]},
+			{[<<"set_resp">>, <<"body">>], http_handler_set_resp,
+				[{body, <<"A flameless dance does not equal a cycle">>}]},
 			{[], http_handler, []}
 		]}
 	].
@@ -105,15 +141,39 @@ headers_dupe(Config) ->
 	{ok, Data} = gen_tcp:recv(Socket, 0, 6000),
 	{_Start, _Length} = binary:match(Data, <<"Connection: close">>),
 	nomatch = binary:match(Data, <<"Connection: keep-alive">>),
-	ok = gen_tcp:close(Socket).
+	{error, closed} = gen_tcp:recv(Socket, 0, 1000).
 
 headers_huge(Config) ->
 	Cookie = lists:flatten(["whatever_man_biiiiiiiiiiiig_cookie_me_want_77="
-		"Wed Apr 06 2011 10:38:52 GMT-0500 (CDT)" || _N <- lists:seq(1, 1000)]),
+		"Wed Apr 06 2011 10:38:52 GMT-0500 (CDT)" || _N <- lists:seq(1, 40)]),
 	{_Packet, 200} = raw_req(["GET / HTTP/1.0\r\nHost: localhost\r\n"
 		"Set-Cookie: ", Cookie, "\r\n\r\n"], Config).
 
+keepalive_nl(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = keepalive_nl_loop(Socket, 100),
+	ok = gen_tcp:close(Socket).
+
+keepalive_nl_loop(_Socket, 0) ->
+	ok;
+keepalive_nl_loop(Socket, N) ->
+	ok = gen_tcp:send(Socket, "GET / HTTP/1.1\r\n"
+		"Host: localhost\r\nConnection: keep-alive\r\n\r\n"),
+	{ok, Data} = gen_tcp:recv(Socket, 0, 6000),
+	{0, 12} = binary:match(Data, <<"HTTP/1.1 200">>),
+	nomatch = binary:match(Data, <<"Connection: close">>),
+	ok = gen_tcp:send(Socket, "\r\n"), %% extra nl
+	keepalive_nl_loop(Socket, N - 1).
+
 nc_rand(Config) ->
+	nc_reqs(Config, "/dev/urandom").
+
+nc_zero(Config) ->
+	nc_reqs(Config, "/dev/zero").
+
+nc_reqs(Config, Input) ->
 	Cat = os:find_executable("cat"),
 	Nc = os:find_executable("nc"),
 	case {Cat, Nc} of
@@ -124,13 +184,13 @@ nc_rand(Config) ->
 		_Good ->
 			%% Throw garbage at the server then check if it's still up.
 			{port, Port} = lists:keyfind(port, 1, Config),
-			[nc_rand_run(Port) || _N <- lists:seq(1, 100)],
+			[nc_run_req(Port, Input) || _N <- lists:seq(1, 100)],
 			Packet = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n",
 			{Packet, 200} = raw_req(Packet, Config)
 	end.
 
-nc_rand_run(Port) ->
-	os:cmd("cat /dev/urandom | nc localhost " ++ integer_to_list(Port)).
+nc_run_req(Port, Input) ->
+	os:cmd("cat " ++ Input ++ " | nc localhost " ++ integer_to_list(Port)).
 
 pipeline(Config) ->
 	{port, Port} = lists:keyfind(port, 1, Config),
@@ -167,37 +227,50 @@ raw_req(Packet, Config) ->
 	{ok, Socket} = gen_tcp:connect("localhost", Port,
 		[binary, {active, false}, {packet, raw}]),
 	ok = gen_tcp:send(Socket, Packet),
-	{ok, << "HTTP/1.1 ", Str:24/bits, _Rest/bits >>}
-		= gen_tcp:recv(Socket, 0, 6000),
+	Res = case gen_tcp:recv(Socket, 0, 6000) of
+		{ok, << "HTTP/1.1 ", Str:24/bits, _Rest/bits >>} ->
+			list_to_integer(binary_to_list(Str));
+		{error, Reason} ->
+			Reason
+	end,
 	gen_tcp:close(Socket),
-	{Packet, list_to_integer(binary_to_list(Str))}.
+	{Packet, Res}.
 
 raw(Config) ->
+	Huge = [$0 || _N <- lists:seq(1, 5000)],
 	Tests = [
 		{"\r\n\r\n\r\n\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\n\r\n", 200},
 		{"\n", 400},
 		{"Garbage\r\n\r\n", 400},
 		{"\r\n\r\n\r\n\r\n\r\n\r\n", 400},
 		{"GET / HTTP/1.1\r\nHost: dev-extend.eu\r\n\r\n", 400},
-		{"", 408},
-		{"\r\n", 408},
-		{"\r\n\r\n", 408},
-		{"GET / HTTP/1.1", 408},
+		{"", closed},
+		{"\r\n", closed},
+		{"\r\n\r\n", closed},
+		{"GET / HTTP/1.1", closed},
 		{"GET / HTTP/1.1\r\n", 408},
 		{"GET / HTTP/1.1\r\nHost: localhost", 408},
 		{"GET / HTTP/1.1\r\nHost: localhost\r\n", 408},
 		{"GET / HTTP/1.1\r\nHost: localhost\r\n\r", 408},
 		{"GET http://localhost/ HTTP/1.1\r\n\r\n", 501},
-		{"GET / HTTP/1.2\r\nHost: localhost\r\n\r\n", 505}
+		{"GET / HTTP/1.2\r\nHost: localhost\r\n\r\n", 505},
+		{"GET /init_shutdown HTTP/1.1\r\nHost: localhost\r\n\r\n", 666},
+		{"GET /long_polling HTTP/1.1\r\nHost: localhost\r\n\r\n", 102},
+		{Huge, 413},
+		{"GET / HTTP/1.1\r\n" ++ Huge, 413}
 	],
 	[{Packet, StatusCode} = raw_req(Packet, Config)
 		|| {Packet, StatusCode} <- Tests].
 
+%% This test makes sure the code works even if we wait for a reply
+%% before sending the third challenge key in the GET body.
+%%
+%% This ensures that Cowboy will work fine with proxies on hixie.
 ws0(Config) ->
 	{port, Port} = lists:keyfind(port, 1, Config),
 	{ok, Socket} = gen_tcp:connect("localhost", Port,
 		[binary, {active, false}, {packet, raw}]),
-	ok = gen_tcp:send(Socket, [
+	ok = gen_tcp:send(Socket,
 		"GET /websocket HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"Connection: Upgrade\r\n"
@@ -205,11 +278,11 @@ ws0(Config) ->
 		"Origin: http://localhost\r\n"
 		"Sec-Websocket-Key1: Y\" 4 1Lj!957b8@0H756!i\r\n"
 		"Sec-Websocket-Key2: 1711 M;4\\74  80<6\r\n"
-		"\r\n", <<15,245,8,18,2,204,133,33>>]),
+		"\r\n"),
 	{ok, Handshake} = gen_tcp:recv(Socket, 0, 6000),
 	{ok, {http_response, {1, 1}, 101, "WebSocket Protocol Handshake"}, Rest}
 		= erlang:decode_packet(http, Handshake, []),
-	[Headers, Body] = websocket_headers(
+	[Headers, <<>>] = websocket_headers(
 		erlang:decode_packet(httph, Rest, []), []),
 	{'Connection', "Upgrade"} = lists:keyfind('Connection', 1, Headers),
 	{'Upgrade', "WebSocket"} = lists:keyfind('Upgrade', 1, Headers),
@@ -217,6 +290,8 @@ ws0(Config) ->
 		= lists:keyfind("sec-websocket-location", 1, Headers),
 	{"sec-websocket-origin", "http://localhost"}
 		= lists:keyfind("sec-websocket-origin", 1, Headers),
+	ok = gen_tcp:send(Socket, <<15,245,8,18,2,204,133,33>>),
+	{ok, Body} = gen_tcp:recv(Socket, 0, 6000),
 	<<169,244,191,103,146,33,149,59,74,104,67,5,99,118,171,236>> = Body,
 	ok = gen_tcp:send(Socket, << 0, "client_msg", 255 >>),
 	{ok, << 0, "client_msg", 255 >>} = gen_tcp:recv(Socket, 0, 6000),
@@ -224,7 +299,12 @@ ws0(Config) ->
 	{ok, << 0, "websocket_handle", 255 >>} = gen_tcp:recv(Socket, 0, 6000),
 	{ok, << 0, "websocket_handle", 255 >>} = gen_tcp:recv(Socket, 0, 6000),
 	{ok, << 0, "websocket_handle", 255 >>} = gen_tcp:recv(Socket, 0, 6000),
-	ok = gen_tcp:send(Socket, << 255, 0 >>),
+	%% We try to send another HTTP request to make sure
+	%% the server closed the request.
+	ok = gen_tcp:send(Socket, [
+		<< 255, 0 >>, %% Close websocket command.
+		"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n" %% Server should ignore it.
+	]),
 	{ok, << 255, 0 >>} = gen_tcp:recv(Socket, 0, 6000),
 	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
 	ok.
@@ -270,12 +350,208 @@ ws8(Config) ->
 	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
 	ok.
 
+ws8_single_bytes(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, [
+		"GET /websocket HTTP/1.1\r\n"
+		"Host: localhost\r\n"
+		"Connection: Upgrade\r\n"
+		"Upgrade: websocket\r\n"
+		"Sec-WebSocket-Origin: http://localhost\r\n"
+		"Sec-WebSocket-Version: 8\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"\r\n"]),
+	{ok, Handshake} = gen_tcp:recv(Socket, 0, 6000),
+	{ok, {http_response, {1, 1}, 101, "Switching Protocols"}, Rest}
+		= erlang:decode_packet(http, Handshake, []),
+	[Headers, <<>>] = websocket_headers(
+		erlang:decode_packet(httph, Rest, []), []),
+	{'Connection', "Upgrade"} = lists:keyfind('Connection', 1, Headers),
+	{'Upgrade', "websocket"} = lists:keyfind('Upgrade', 1, Headers),
+	{"sec-websocket-accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="}
+		= lists:keyfind("sec-websocket-accept", 1, Headers),
+	ok = gen_tcp:send(Socket, << 16#81 >>), %% send one byte
+	ok = timer:sleep(100), %% sleep for a period
+	ok = gen_tcp:send(Socket, << 16#85 >>), %% send another and so on
+        ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#37 >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#fa >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#21 >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#3d >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#7f >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#9f >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#4d >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#51 >>),
+	ok = timer:sleep(100),
+	ok = gen_tcp:send(Socket, << 16#58 >>),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 14:7, "websocket_init" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 5:7, "Hello" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 16:7, "websocket_handle" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 16:7, "websocket_handle" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 16:7, "websocket_handle" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	ok = gen_tcp:send(Socket, << 1:1, 0:3, 9:4, 0:8 >>), %% ping
+	{ok, << 1:1, 0:3, 10:4, 0:8 >>} = gen_tcp:recv(Socket, 0, 6000), %% pong
+	ok = gen_tcp:send(Socket, << 1:1, 0:3, 8:4, 0:8 >>), %% close
+	{ok, << 1:1, 0:3, 8:4, 0:8 >>} = gen_tcp:recv(Socket, 0, 6000),
+	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
+	ok.
+
+ws_timeout_hibernate(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, [
+		"GET /ws_timeout_hibernate HTTP/1.1\r\n"
+		"Host: localhost\r\n"
+		"Connection: Upgrade\r\n"
+		"Upgrade: websocket\r\n"
+		"Sec-WebSocket-Origin: http://localhost\r\n"
+		"Sec-WebSocket-Version: 8\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"\r\n"]),
+	{ok, Handshake} = gen_tcp:recv(Socket, 0, 6000),
+	{ok, {http_response, {1, 1}, 101, "Switching Protocols"}, Rest}
+		= erlang:decode_packet(http, Handshake, []),
+	[Headers, <<>>] = websocket_headers(
+		erlang:decode_packet(httph, Rest, []), []),
+	{'Connection', "Upgrade"} = lists:keyfind('Connection', 1, Headers),
+	{'Upgrade', "websocket"} = lists:keyfind('Upgrade', 1, Headers),
+	{"sec-websocket-accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="}
+		= lists:keyfind("sec-websocket-accept", 1, Headers),
+	{ok, << 1:1, 0:3, 8:4, 0:8 >>} = gen_tcp:recv(Socket, 0, 6000),
+	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
+	ok.
+
+ws8_init_shutdown(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, [
+		"GET /ws_init_shutdown HTTP/1.1\r\n"
+		"Host: localhost\r\n"
+		"Connection: Upgrade\r\n"
+		"Upgrade: websocket\r\n"
+		"Sec-WebSocket-Origin: http://localhost\r\n"
+		"Sec-WebSocket-Version: 8\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"\r\n"]),
+	{ok, Handshake} = gen_tcp:recv(Socket, 0, 6000),
+	{ok, {http_response, {1, 1}, 403, "Forbidden"}, _Rest}
+		= erlang:decode_packet(http, Handshake, []),
+	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
+	ok.
+
+ws13(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, [
+		"GET /websocket HTTP/1.1\r\n"
+		"Host: localhost\r\n"
+		"Connection: Upgrade\r\n"
+		"Origin: http://localhost\r\n"
+		"Sec-WebSocket-Version: 13\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"Upgrade: websocket\r\n"
+		"\r\n"]),
+	{ok, Handshake} = gen_tcp:recv(Socket, 0, 6000),
+	{ok, {http_response, {1, 1}, 101, "Switching Protocols"}, Rest}
+		= erlang:decode_packet(http, Handshake, []),
+	[Headers, <<>>] = websocket_headers(
+		erlang:decode_packet(httph, Rest, []), []),
+	{'Connection', "Upgrade"} = lists:keyfind('Connection', 1, Headers),
+	{'Upgrade', "websocket"} = lists:keyfind('Upgrade', 1, Headers),
+	{"sec-websocket-accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="}
+		= lists:keyfind("sec-websocket-accept", 1, Headers),
+	ok = gen_tcp:send(Socket, << 16#81, 16#85, 16#37, 16#fa, 16#21, 16#3d,
+		16#7f, 16#9f, 16#4d, 16#51, 16#58 >>),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 5:7, "Hello" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 14:7, "websocket_init" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 16:7, "websocket_handle" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 16:7, "websocket_handle" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	{ok, << 1:1, 0:3, 1:4, 0:1, 16:7, "websocket_handle" >>}
+		= gen_tcp:recv(Socket, 0, 6000),
+	ok = gen_tcp:send(Socket, << 1:1, 0:3, 9:4, 0:8 >>), %% ping
+	{ok, << 1:1, 0:3, 10:4, 0:8 >>} = gen_tcp:recv(Socket, 0, 6000), %% pong
+	ok = gen_tcp:send(Socket, << 1:1, 0:3, 8:4, 0:8 >>), %% close
+	{ok, << 1:1, 0:3, 8:4, 0:8 >>} = gen_tcp:recv(Socket, 0, 6000),
+	{error, closed} = gen_tcp:recv(Socket, 0, 6000),
+	ok.
+
 websocket_headers({ok, http_eoh, Rest}, Acc) ->
 	[Acc, Rest];
 websocket_headers({ok, {http_header, _I, Key, _R, Value}, Rest}, Acc) ->
 	F = fun(S) when is_atom(S) -> S; (S) -> string:to_lower(S) end,
 	websocket_headers(erlang:decode_packet(httph, Rest, []),
 		[{F(Key), Value}|Acc]).
+
+set_resp_header(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, "GET /set_resp/header HTTP/1.1\r\n"
+		"Host: localhost\r\nConnection: close\r\n\r\n"),
+	{ok, Data} = gen_tcp:recv(Socket, 0, 6000),
+	{_, _} = binary:match(Data, <<"Vary: Accept">>),
+	{_, _} = binary:match(Data, <<"Set-Cookie: ">>).
+
+set_resp_overwrite(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, "GET /set_resp/overwrite HTTP/1.1\r\n"
+		"Host: localhost\r\nConnection: close\r\n\r\n"),
+	{ok, Data} = gen_tcp:recv(Socket, 0, 6000),
+	{_Start, _Length} = binary:match(Data, <<"Server: DesireDrive/1.0">>).
+
+set_resp_body(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = gen_tcp:send(Socket, "GET /set_resp/body HTTP/1.1\r\n"
+		"Host: localhost\r\nConnection: close\r\n\r\n"),
+	{ok, Data} = gen_tcp:recv(Socket, 0, 6000),
+	{_Start, _Length} = binary:match(Data, <<"\r\n\r\n"
+		"A flameless dance does not equal a cycle">>).
+
+response_as_req(Config) ->
+	Packet =
+"HTTP/1.0 302 Found
+Location: http://www.google.co.il/
+Cache-Control: private
+Content-Type: text/html; charset=UTF-8
+Set-Cookie: PREF=ID=568f67013d4a7afa:FF=0:TM=1323014101:LM=1323014101:S=XqctDWC65MzKT0zC; expires=Tue, 03-Dec-2013 15:55:01 GMT; path=/; domain=.google.com
+Date: Sun, 04 Dec 2011 15:55:01 GMT
+Server: gws
+Content-Length: 221
+X-XSS-Protection: 1; mode=block
+X-Frame-Options: SAMEORIGIN
+
+<HTML><HEAD><meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">
+<TITLE>302 Moved</TITLE></HEAD><BODY>
+<H1>302 Moved</H1>
+The document has moved
+<A HREF=\"http://www.google.co.il/\">here</A>.
+</BODY></HTML>",
+	{Packet, 400} = raw_req(Packet, Config).
 
 %% http and https.
 
@@ -291,3 +567,32 @@ http_200(Config) ->
 http_404(Config) ->
 	{ok, {{"HTTP/1.1", 404, "Not Found"}, _Headers, _Body}} =
 		httpc:request(build_url("/not/found", Config)).
+
+%% misc.
+
+http_10_hostless(Config) ->
+	Packet = "GET / HTTP/1.0\r\n\r\n",
+	{Packet, 200} = raw_req(Packet, Config).
+
+%% rest.
+
+rest_simple(Config) ->
+	Packet = "GET /simple HTTP/1.1\r\nHost: localhost\r\n\r\n",
+	{Packet, 200} = raw_req(Packet, Config).
+
+rest_keepalive(Config) ->
+	{port, Port} = lists:keyfind(port, 1, Config),
+	{ok, Socket} = gen_tcp:connect("localhost", Port,
+		[binary, {active, false}, {packet, raw}]),
+	ok = rest_keepalive_loop(Socket, 100),
+	ok = gen_tcp:close(Socket).
+
+rest_keepalive_loop(_Socket, 0) ->
+	ok;
+rest_keepalive_loop(Socket, N) ->
+	ok = gen_tcp:send(Socket, "GET /simple HTTP/1.1\r\n"
+		"Host: localhost\r\nConnection: keep-alive\r\n\r\n"),
+	{ok, Data} = gen_tcp:recv(Socket, 0, 6000),
+	{0, 12} = binary:match(Data, <<"HTTP/1.1 200">>),
+	nomatch = binary:match(Data, <<"Connection: close">>),
+	rest_keepalive_loop(Socket, N - 1).
