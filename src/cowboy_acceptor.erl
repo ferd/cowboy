@@ -48,9 +48,3 @@ acceptor(LSocket, Transport, Protocol, Opts, MaxConns, ListenerPid, ReqsSup) ->
 	end,
 	?MODULE:acceptor(LSocket, Transport, Protocol, Opts,
 		MaxConns, ListenerPid, ReqsSup).
-
--spec limit_reqs(pid(), non_neg_integer(), non_neg_integer()) -> ok.
-limit_reqs(_ListenerPid, NbConns, MaxConns) when NbConns =< MaxConns ->
-	ok;
-limit_reqs(ListenerPid, _NbConns, MaxConns) ->
-	cowboy_listener:wait(ListenerPid, default, MaxConns).
