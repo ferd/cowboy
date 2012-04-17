@@ -38,10 +38,7 @@ acceptor(LSocket, Transport, Protocol, Opts, MaxConns, ListenerPid, ReqsSup) ->
 			{ok, Pid} = supervisor:start_child(ReqsSup,
 				[ListenerPid, CSocket, Transport, Protocol, Opts]),
 			Transport:controlling_process(CSocket, Pid),
-			{ok, NbConns} = cowboy_listener:add_connection(ListenerPid,
-				default, Pid),
-			Pid ! shoot,
-			limit_reqs(ListenerPid, NbConns, MaxConns);
+			Pid ! shoot;
 		{error, timeout} ->
 			ignore;
 		{error, _Reason} ->
