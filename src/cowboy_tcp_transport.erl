@@ -48,16 +48,8 @@ messages() -> {tcp, tcp_closed, tcp_error}.
 -spec listen([{port, inet:ip_port()} | {ip, inet:ip_address()}])
 	-> {ok, inet:socket()} | {error, atom()}.
 listen(Opts) ->
-	{port, Port} = lists:keyfind(port, 1, Opts),
-	Backlog = proplists:get_value(backlog, Opts, 1024),
-	ListenOpts0 = [binary, {active, false},
-		{backlog, Backlog}, {packet, raw}, {reuseaddr, true}],
-	ListenOpts =
-		case lists:keyfind(ip, 1, Opts) of
-			false -> ListenOpts0;
-			Ip -> [Ip|ListenOpts0]
-		end,
-	gen_tcp:listen(Port, ListenOpts).
+    {Port, ListenOpts} = parse_listen_options(Opts),
+    gen_tcp:listen(Port, ListenOpts).
 
 %% @doc Accept an incoming connection on a listen socket.
 %% @see gen_tcp:accept/2
@@ -104,3 +96,20 @@ peername(Socket) ->
 -spec close(inet:socket()) -> ok.
 close(Socket) ->
 	gen_tcp:close(Socket).
+
+%% Helpers
+parse_listen_options(Opts) ->
+   parse_listen_options(Opts, 0, [binary, {active, false}, {packet, raw}, {reuseaddr, true}]).
+
+parse_listen_options([{port, Port}|T], _, Opts) ->
+    parse_listen_options(T, Port, Opts);
+parse_listen_options([{backlog, Backlog}|T], Port, Opts) ->
+    parse_listen_options(T, Port, [{backlog, Backlog}|Opts]);
+parse_listen_options([{ip, IP}|T], Port, Opts) ->
+    parse_listen_options(T, Port, [{ip, IP}|Opts]);
+parse_listen_options([{raw, Protocol, OptionNum, ValueSpec}|T], Port, Opts) ->
+    parse_listen_options(T, Port, [{raw, Protocol, OptionNum, ValueSpec}|Opts]);
+parse_listen_options([_|T], Port, Opts) -> %% ignore other options
+    parse_listen_options(T, Port, Opts);
+parse_listen_options([], Port, Opts) ->
+    {Port, Opts}.
