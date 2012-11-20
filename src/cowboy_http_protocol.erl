@@ -287,11 +287,13 @@ error_response(Code, #state{socket=Socket,
 
 -spec error_terminate(http_status(), #state{}) -> ok.
 error_terminate(Code, State) ->
+	statsderl:increment([<<"connections.error.">>, list_to_binary(integer_to_list(Code))], 1, 0.01),
 	error_response(Code, State#state{connection=close}),
 	terminate(State).
 
 -spec terminate(#state{}) -> ok.
 terminate(#state{socket=Socket, transport=Transport}) ->
+	statsderl:increment([<<"connections.close">>], 1, 0.01),
 	Transport:close(Socket),
 	ok.
 
