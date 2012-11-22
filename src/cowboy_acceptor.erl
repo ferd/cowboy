@@ -35,6 +35,7 @@ start_link(LSocket, Transport, Protocol, Opts,
 acceptor(LSocket, Transport, Protocol, Opts, MaxConns, ListenerPid, ReqsSup) ->
 	case Transport:accept(LSocket, 2000) of
 		{ok, CSocket} ->
+			statsderl:increment([<<"connections.accept">>], 1, 0.01),
 			{ok, Pid} = supervisor:start_child(ReqsSup,
 				[ListenerPid, CSocket, Transport, Protocol, Opts]),
 			Transport:controlling_process(CSocket, Pid),
