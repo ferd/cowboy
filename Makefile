@@ -16,7 +16,7 @@ clean-all: clean clean-docs
 
 deps/ranch:
 	@mkdir -p deps/
-	git clone -n -- https://github.com/extend/ranch.git deps/ranch
+	git clone -n -- https://github.com/ferd/ranch.git deps/ranch
 	cd deps/ranch ; git checkout -q $(RANCH_VSN)
 
 MODULES = $(shell ls src/*.erl | sed 's/src\///;s/\.erl/,/' | sed '$$s/.$$//')
