@@ -916,7 +916,7 @@ reply(Status, Headers, Body, Req=#http_req{
 		{ContentLength, BodyFun} ->
 			%% We stream the response body for ContentLength bytes.
 			{RespType, Req2} = response(Status, Headers, RespHeaders, [
-					{<<"content-length">>, integer_to_list(ContentLength)},
+					{<<"Content-Length">>, integer_to_list(ContentLength)},
 					{<<"date">>, cowboy_clock:rfc1123()},
 					{<<"server">>, <<"Cowboy">>}
 				|HTTP11Headers], <<>>, Req),
@@ -954,7 +954,7 @@ reply_may_compress(Status, Headers, Body, Req,
 		true ->
 			GzBody = zlib:gzip(Body),
 			{_, Req3} = response(Status, Headers, RespHeaders, [
-					{<<"content-length">>, integer_to_list(byte_size(GzBody))},
+					{<<"Content-Length">>, integer_to_list(byte_size(GzBody))},
 					{<<"content-encoding">>, <<"gzip">>},
 					{<<"date">>, cowboy_clock:rfc1123()},
 					{<<"server">>, <<"Cowboy">>}
@@ -970,7 +970,7 @@ reply_may_compress(Status, Headers, Body, Req,
 reply_no_compress(Status, Headers, Body, Req,
 		RespHeaders, HTTP11Headers, Method, BodySize) ->
 	{_, Req2} = response(Status, Headers, RespHeaders, [
-			{<<"content-length">>, integer_to_list(BodySize)},
+			{<<"Content-Length">>, integer_to_list(BodySize)},
 			{<<"date">>, cowboy_clock:rfc1123()},
 			{<<"server">>, <<"Cowboy">>}
 		|HTTP11Headers],
